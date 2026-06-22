@@ -1,0 +1,30 @@
+# Python virtual environment and cache
+backend/venv/
+backend/.venv/
+backend/__pycache__/
+backend/venv_test/
+*.pyc
+*.pyo
+*.pyd
+
+# Local databases and media files
+backend/db.sqlite3
+backend/media/
+backend/chroma_db/
+
+# Frontend dependencies and builds
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/.env.local
+frontend/.env.production.local
+frontend/.env.development.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Private env configs
+backend/.env
+frontend/.env

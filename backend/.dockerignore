@@ -1,0 +1,21 @@
+# Python virtual env and cache
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local database and media uploads
+db.sqlite3
+media/
+chroma_db/
+.env
+
+# Testing and local configs
+.pytest_cache/
+.coverage
+htmlcov/
+.git
+.gitignore
