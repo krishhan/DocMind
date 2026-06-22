@@ -224,7 +224,7 @@ IS_TESTING = len(sys.argv) > 1 and sys.argv[1] == 'test'
 
 Q_CLUSTER = {
     'name': 'docmind_cluster',
-    'workers': 2,
+    'workers': int(os.environ.get('Q_CLUSTER_WORKERS', '1' if not DEBUG else '2')),
     'recycle': 500,
     'timeout': 300,
     'retry': 360,

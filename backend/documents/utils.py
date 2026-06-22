@@ -1,11 +1,7 @@
 import os
-import pypdf
-import fitz
 import threading
 import logging
 from django.conf import settings
-from sentence_transformers import SentenceTransformer
-import chromadb
 from .models import Document, DocumentChunk
 
 logger = logging.getLogger(__name__)
@@ -17,6 +13,7 @@ def get_embedding_model():
     global _embedding_model
     if _embedding_model is None:
         logger.info("Loading sentence-transformers model (all-MiniLM-L6-v2) locally...")
+        from sentence_transformers import SentenceTransformer
         _embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
         logger.info("Model loaded successfully.")
     return _embedding_model
@@ -34,6 +31,7 @@ def get_ocr_engine():
     return _ocr_engine
 
 def get_chroma_client():
+    import chromadb
     return chromadb.PersistentClient(path=settings.CHROMA_DB_DIR)
 
 def get_chroma_collection():
@@ -115,6 +113,8 @@ def split_text_recursively(text, max_chunk_size=1500, overlap=200, separator_idx
     return chunks
 
 def extract_and_chunk_pdf(file_path, chunk_size=1500, chunk_overlap=200):
+    import pypdf
+    import fitz
     chunks = []
     doc_fitz = None
     try:
