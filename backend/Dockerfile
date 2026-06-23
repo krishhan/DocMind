@@ -9,10 +9,12 @@ ENV WORKDIR=/app
 # Set work directory
 WORKDIR ${WORKDIR}
 
-# Install system dependencies (needed for compiling certain packages and PostgreSQL support)
+# Install system dependencies (needed for compiling certain packages, PostgreSQL support, and OpenCV/RapidOCR)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
+    libgl1 \
+    libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install python dependencies
