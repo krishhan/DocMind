@@ -200,7 +200,7 @@ class DocumentAskView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-        model_name = os.environ.get("OPENROUTER_MODEL", "meta-llama/llama-3.1-8b-instruct:free")
+        model_name = os.environ.get("OPENROUTER_MODEL", "openrouter/free")
         
         # Load conversation history for context (up to last 10 messages)
         past_msgs = conversation.messages.order_by('-created_at')[:10]

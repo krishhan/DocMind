@@ -63,7 +63,7 @@ class ChatTests(APITestCase):
         # Set environment variables mock
         mock_env_get.side_effect = lambda key, default=None: {
             "OPENROUTER_API_KEY": "fake_key",
-            "OPENROUTER_MODEL": "meta-llama/llama-3.1-8b-instruct:free"
+            "OPENROUTER_MODEL": "openrouter/free"
         }.get(key, default)
 
         # Mock embedding model
