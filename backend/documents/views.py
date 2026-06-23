@@ -13,6 +13,22 @@ class DocumentListUploadView(generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        from django.utils import timezone
+        from datetime import timedelta
+        
+        # Automatically fail any documents stuck in processing for more than 5 minutes
+        stuck_threshold = timezone.now() - timedelta(minutes=5)
+        stuck_docs = Document.objects.filter(
+            owner=self.request.user,
+            status='processing',
+            upload_date__lt=stuck_threshold
+        )
+        for doc in stuck_docs:
+            doc.status = 'failed'
+            doc.error_message = "Processing timed out. The server might have restarted or run out of memory. Please try again."
+            doc.save()
+            logger.warning(f"Marked stuck Document ID {doc.id} as failed.")
+
         return Document.objects.filter(owner=self.request.user).order_by('-upload_date')
 
     def create(self, request, *args, **kwargs):

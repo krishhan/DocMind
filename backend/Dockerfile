@@ -19,6 +19,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt ${WORKDIR}/
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Pre-download and cache sentence-transformers and OCR models to avoid runtime download/OOM issues
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+RUN python -c "from rapidocr_onnxruntime import RapidOCR; RapidOCR()"
+
 # Copy project files
 COPY . ${WORKDIR}/
 

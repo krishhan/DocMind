@@ -1,6 +1,8 @@
 import os
 import threading
 import logging
+import pypdf
+import fitz
 from django.conf import settings
 from .models import Document, DocumentChunk
 
@@ -113,8 +115,6 @@ def split_text_recursively(text, max_chunk_size=1500, overlap=200, separator_idx
     return chunks
 
 def extract_and_chunk_pdf(file_path, chunk_size=1500, chunk_overlap=200):
-    import pypdf
-    import fitz
     chunks = []
     doc_fitz = None
     try:
@@ -246,7 +246,22 @@ def process_document_pipeline(document_id):
             document.save()
         except Exception as inner_e:
             logger.error(f"Failed to save document error status: {str(inner_e)}")
+    finally:
+        import gc
+        gc.collect()
 
 def run_document_processing(document_id):
-    from django_q.tasks import async_task
-    async_task('documents.utils.process_document_pipeline', document_id)
+    from django.db import close_old_connections
+    
+    def thread_target():
+        try:
+            close_old_connections()
+            process_document_pipeline(document_id)
+        except Exception as thread_err:
+            logger.exception(f"Unhandled error in document processing thread: {str(thread_err)}")
+        finally:
+            close_old_connections()
+            
+    thread = threading.Thread(target=thread_target, name=f"DocProcess-{document_id}")
+    thread.daemon = True
+    thread.start()

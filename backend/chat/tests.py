@@ -191,6 +191,9 @@ class ChatTests(APITestCase):
         
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         
+        # Consume the streaming content to trigger generator execution
+        list(response.streaming_content)
+        
         # Verify that mock_client.chat.completions.create was called with the correct history
         call_args = mock_client.chat.completions.create.call_args
         self.assertIsNotNone(call_args)
