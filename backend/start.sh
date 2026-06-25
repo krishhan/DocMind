@@ -9,8 +9,8 @@ python manage.py collectstatic --noinput
 echo "==> Running database migrations..."
 python manage.py migrate
 
-echo "==> Starting Django Q Cluster worker in background..."
-python manage.py qcluster > /dev/stdout 2>&1 &
+echo "==> Starting Celery worker in background..."
+celery -A docmind worker --loglevel=info > /dev/stdout 2>&1 &
 
 # Get workers parameter from GUNICORN_WORKERS env var, default to 3
 WORKERS_COUNT=${GUNICORN_WORKERS:-3}

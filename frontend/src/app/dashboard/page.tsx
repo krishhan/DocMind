@@ -15,15 +15,17 @@ interface Document {
   status: "processing" | "ready" | "failed";
   file: string;
   error_message?: string;
+  processing_progress: number;
 }
 
 export default function DashboardPage() {
-  const { user, loading: authLoading, logout, apiFetch } = useAuth();
+  const { user, loading: authLoading, logout, apiFetch, backendUrl } = useAuth();
   const router = useRouter();
 
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loadingDocs, setLoadingDocs] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadError, setUploadError] = useState("");
   const [dragOver, setDragOver] = useState(false);
 
@@ -38,7 +40,9 @@ export default function DashboardPage() {
       const res = await apiFetch("/api/documents/");
       if (res.ok) {
         const data = await res.json();
-        setDocuments(data);
+        // Handle paginated endpoint results key or raw array
+        const docList = Array.isArray(data) ? data : (data.results || []);
+        setDocuments(docList);
       }
     } catch (err) {
       console.error("Failed to fetch documents", err);
@@ -61,11 +65,12 @@ export default function DashboardPage() {
 
     const interval = setInterval(() => {
       fetchDocuments();
-    }, 3000);
+    }, 2500);
 
     return () => clearInterval(interval);
   }, [documents, fetchDocuments]);
 
+  // Upload PDF with real progress feedback using XMLHttpRequest
   const handleFileUpload = async (file: File) => {
     if (!file) return;
 
@@ -81,28 +86,57 @@ export default function DashboardPage() {
 
     setUploading(true);
     setUploadError("");
+    setUploadProgress(0);
 
     const formData = new FormData();
     formData.append("file", file);
 
-    try {
-      const res = await apiFetch("/api/documents/", {
-        method: "POST",
-        body: formData,
-      });
+    const xhr = new XMLHttpRequest();
+    const access = localStorage.getItem("access_token");
+    
+    // Resolve upload URL
+    const targetUrl = `${backendUrl || "http://localhost:8000"}/api/documents/`;
 
-      if (res.ok) {
-        const newDoc = await res.json();
-        setDocuments(prev => [newDoc, ...prev]);
-      } else {
-        const errData = await res.json();
-        setUploadError(errData.error || "Failed to upload file");
-      }
-    } catch (err) {
-      setUploadError("Network connection error. Failed to upload.");
-    } finally {
-      setUploading(false);
+    xhr.open("POST", targetUrl, true);
+    if (access) {
+      xhr.setRequestHeader("Authorization", `Bearer ${access}`);
     }
+
+    // Monitor upload progress (0-95%)
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) {
+        const percent = Math.round((event.loaded / event.total) * 100);
+        setUploadProgress(Math.min(95, percent));
+      }
+    };
+
+    xhr.onload = () => {
+      setUploading(false);
+      setUploadProgress(100);
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const newDoc = JSON.parse(xhr.responseText);
+          setDocuments(prev => [newDoc, ...prev]);
+        } catch (e) {
+          fetchDocuments();
+        }
+      } else {
+        try {
+          const errData = JSON.parse(xhr.responseText);
+          setUploadError(errData.error || "Failed to upload file");
+        } catch (e) {
+          setUploadError("Failed to upload file. Invalid server response.");
+        }
+      }
+    };
+
+    xhr.onerror = () => {
+      setUploading(false);
+      setUploadProgress(0);
+      setUploadError("Network connection error. Failed to upload.");
+    };
+
+    xhr.send(formData);
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -162,17 +196,17 @@ export default function DashboardPage() {
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-gradient-to-tr from-indigo-600 to-purple-600 shadow-md text-white font-bold">
             DM
           </div>
-          <span className="text-xl font-bold tracking-tight text-white">DocMind</span>
+          <span className="text-xl font-bold tracking-tight text-white select-none">DocMind</span>
         </div>
 
         <div className="flex items-center gap-6">
-          <div className="flex items-center gap-2 text-zinc-300 text-sm bg-zinc-800/40 px-3 py-1.5 rounded-full border border-zinc-800">
+          <div className="flex items-center gap-2 text-zinc-300 text-sm bg-zinc-800/40 px-3 py-1.5 rounded-full border border-zinc-800 select-none">
             <User className="h-4 w-4 text-indigo-400" />
             <span>{user.username}</span>
           </div>
           <button
             onClick={logout}
-            className="flex items-center gap-2 text-zinc-400 hover:text-red-400 text-sm font-semibold transition-colors duration-200"
+            className="flex items-center gap-2 text-zinc-400 hover:text-red-400 text-sm font-semibold transition-colors duration-200 cursor-pointer"
           >
             <LogOut className="h-4 w-4" />
             <span>Sign Out</span>
@@ -187,7 +221,7 @@ export default function DashboardPage() {
             <h1 className="text-3xl font-extrabold tracking-tight text-white bg-clip-text">
               My Documents
             </h1>
-            <p className="text-sm text-zinc-400 mt-1">
+            <p className="text-sm text-zinc-400 mt-1 select-none">
               Upload PDF files to index them and start chatting
             </p>
           </div>
@@ -195,7 +229,7 @@ export default function DashboardPage() {
           <button 
             onClick={fetchDocuments}
             disabled={loadingDocs}
-            className="flex items-center gap-2 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800/80 px-4 py-2 rounded-xl text-sm font-semibold text-zinc-300 transition-all self-start md:self-auto"
+            className="flex items-center gap-2 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800/80 px-4 py-2 rounded-xl text-sm font-semibold text-zinc-300 transition-all self-start md:self-auto cursor-pointer"
           >
             <RefreshCw className={`h-4 w-4 ${loadingDocs ? "animate-spin text-indigo-500" : ""}`} />
             <span>Sync</span>
@@ -205,12 +239,12 @@ export default function DashboardPage() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Uploader Column */}
           <div className="space-y-4">
-            <h2 className="text-lg font-bold text-zinc-300">Upload New File</h2>
+            <h2 className="text-lg font-bold text-zinc-300 select-none">Upload New File</h2>
             <div
               onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
               onDragLeave={() => setDragOver(false)}
               onDrop={handleDrop}
-              className={`border-2 border-dashed rounded-2xl p-8 flex flex-col items-center justify-center text-center cursor-pointer transition-all duration-200 min-h-[260px] bg-zinc-900/20 backdrop-blur-sm ${
+              className={`border-2 border-dashed rounded-2xl p-8 flex flex-col items-center justify-center text-center cursor-pointer transition-all duration-200 min-h-[260px] bg-zinc-900/20 backdrop-blur-sm select-none ${
                 dragOver 
                   ? "border-indigo-500 bg-indigo-500/5 shadow-inner" 
                   : "border-zinc-800 hover:border-zinc-700 hover:bg-zinc-900/30"
@@ -229,12 +263,17 @@ export default function DashboardPage() {
               />
               
               {uploading ? (
-                <div className="flex flex-col items-center gap-3">
+                <div className="flex flex-col items-center gap-3 w-full max-w-[200px]">
                   <div className="relative flex h-14 w-14 items-center justify-center rounded-full bg-indigo-500/10 text-indigo-400">
                     <Loader2 className="h-7 w-7 animate-spin" />
                   </div>
-                  <p className="text-sm font-semibold text-zinc-200">Processing file...</p>
-                  <p className="text-xs text-zinc-400">Extracting and embedding document chunks</p>
+                  <p className="text-sm font-semibold text-zinc-200">Uploading file...</p>
+                  
+                  {/* Real-time upload progress bar */}
+                  <div className="w-full bg-zinc-800 h-1.5 rounded-full overflow-hidden mt-1.5">
+                    <div className="bg-indigo-500 h-full transition-all duration-150" style={{ width: `${uploadProgress}%` }} />
+                  </div>
+                  <span className="text-[10px] text-zinc-400 font-bold">{uploadProgress}%</span>
                 </div>
               ) : (
                 <div className="flex flex-col items-center gap-3">
@@ -259,15 +298,30 @@ export default function DashboardPage() {
 
           {/* Files List Column */}
           <div className="lg:col-span-2 space-y-4">
-            <h2 className="text-lg font-bold text-zinc-300">Indexed Files ({documents.length})</h2>
+            <h2 className="text-lg font-bold text-zinc-300 select-none">Indexed Files ({documents.length})</h2>
 
             {loadingDocs ? (
-              <div className="flex flex-col items-center justify-center py-16 bg-zinc-900/20 border border-zinc-800 rounded-2xl">
-                <Loader2 className="h-8 w-8 animate-spin text-indigo-500" />
-                <p className="text-zinc-500 text-sm mt-3">Loading your library...</p>
+              /* Premium Card skeleton loaders */
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {[1, 2, 3, 4].map((i) => (
+                  <div key={i} className="border border-zinc-800 rounded-2xl p-5 bg-zinc-900/20 flex flex-col justify-between min-h-[160px] animate-pulse">
+                    <div>
+                      <div className="flex items-start justify-between">
+                        <div className="h-10 w-10 bg-zinc-800 rounded-lg animate-pulse" />
+                        <div className="h-8 w-8 bg-zinc-800 rounded-lg animate-pulse" />
+                      </div>
+                      <div className="h-4 bg-zinc-800 rounded w-2/3 mt-4 animate-pulse" />
+                      <div className="h-3 bg-zinc-850 rounded w-1/3 mt-2 animate-pulse" />
+                    </div>
+                    <div className="mt-4 pt-4 border-t border-zinc-800/60 flex items-center justify-between">
+                      <div className="h-4 bg-zinc-850 rounded w-1/4 animate-pulse" />
+                      <div className="h-6 bg-zinc-850 rounded-full w-12 animate-pulse" />
+                    </div>
+                  </div>
+                ))}
               </div>
             ) : documents.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-16 bg-zinc-900/20 border border-zinc-800 border-dashed rounded-2xl text-center px-4">
+              <div className="flex flex-col items-center justify-center py-16 bg-zinc-900/20 border border-zinc-800 border-dashed rounded-2xl text-center px-4 select-none">
                 <FileText className="h-10 w-10 text-zinc-600 mb-3" />
                 <p className="text-zinc-400 font-semibold">No documents uploaded yet</p>
                 <p className="text-zinc-500 text-xs mt-1">Upload a PDF file using the panel to get started.</p>
@@ -293,10 +347,10 @@ export default function DashboardPage() {
                         </div>
                         
                         <div className="flex gap-2">
-                          {/* Trash button */}
+                          {/* Delete button */}
                           <button
                             onClick={(e) => handleDelete(e, doc.id)}
-                            className="text-zinc-500 hover:text-red-400 p-1.5 rounded-lg hover:bg-zinc-800 transition-colors duration-200 shrink-0"
+                            className="text-zinc-500 hover:text-red-400 p-1.5 rounded-lg hover:bg-zinc-800 transition-colors duration-200 shrink-0 cursor-pointer"
                             title="Delete document"
                           >
                             <Trash2 className="h-4 w-4" />
@@ -329,9 +383,18 @@ export default function DashboardPage() {
                       )}
                       
                       {doc.status === "processing" && (
-                        <div className="flex items-center gap-1.5 text-amber-400 text-xs font-semibold">
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          <span>Embedding...</span>
+                        /* Premium processing embedding progress bar */
+                        <div className="flex flex-col gap-1 w-full">
+                          <div className="flex items-center justify-between text-amber-400 text-xs font-semibold">
+                            <div className="flex items-center gap-1.5">
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              <span>Embedding...</span>
+                            </div>
+                            <span>{doc.processing_progress || 0}%</span>
+                          </div>
+                          <div className="w-full bg-zinc-800 h-1 rounded-full overflow-hidden mt-1">
+                            <div className="bg-amber-400 h-full transition-all duration-300" style={{ width: `${doc.processing_progress || 0}%` }} />
+                          </div>
                         </div>
                       )}
 

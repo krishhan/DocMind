@@ -1,8 +1,9 @@
 import os
-import threading
+import re
 import logging
 import pypdf
 import fitz
+import tiktoken
 from django.conf import settings
 from .models import Document, DocumentChunk
 
@@ -19,6 +20,18 @@ def get_embedding_model():
         _embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
         logger.info("Model loaded successfully.")
     return _embedding_model
+
+# Cache Cross-Encoder model as singleton
+_reranker_model = None
+
+def get_reranker_model():
+    global _reranker_model
+    if _reranker_model is None:
+        logger.info("Loading Cross-Encoder model (BAAI/bge-reranker-base) locally...")
+        from sentence_transformers import CrossEncoder
+        _reranker_model = CrossEncoder('BAAI/bge-reranker-base')
+        logger.info("Cross-Encoder model loaded successfully.")
+    return _reranker_model
 
 # Cache OCR engine as singleton to avoid reloading on every page/request
 _ocr_engine = None
@@ -40,82 +53,103 @@ def get_chroma_collection():
     client = get_chroma_client()
     return client.get_or_create_collection(name="docmind_chunks")
 
-def split_text_recursively(text, max_chunk_size=1500, overlap=200, separator_idx=0):
+def get_token_count(text: str) -> int:
+    try:
+        encoding = tiktoken.get_encoding("cl100k_base")
+        return len(encoding.encode(text, disallowed_special=()))
+    except Exception:
+        # Fallback approximation: 1 token ≈ 4 characters
+        return len(text) // 4
+
+def clean_and_check_noisy(text: str) -> bool:
+    cleaned = text.strip()
+    if not cleaned:
+        return True
+    # Exclude page footers or simple numbers (e.g. "1", "Page 2 of 24", "12")
+    if re.match(r'^(page\s+\d+|\d+\s+of\s+\d+|\d+)$', cleaned.lower()):
+        return True
+    # Exclude chunks containing mostly punctuation/special symbols
+    alnum_chars = [c for c in cleaned if c.isalnum()]
+    if len(alnum_chars) < (len(cleaned) * 0.3):
+        return True
+    return False
+
+def split_text_recursively_tokens(text, max_tokens=500, overlap_tokens=50, separator_idx=0):
     separators = ["\n\n", "\n", ". ", " ", ""]
     if separator_idx >= len(separators):
-        # Fallback to direct character slicing
+        # Fallback split by word list
         chunks = []
-        start = 0
-        while start < len(text):
-            end = start + max_chunk_size
-            chunks.append(text[start:end])
-            if end >= len(text):
-                break
-            start += (max_chunk_size - overlap)
+        words = text.split()
+        current_chunk = []
+        current_tokens = 0
+        for word in words:
+            word_tokens = get_token_count(word)
+            if current_tokens + word_tokens <= max_tokens:
+                current_chunk.append(word)
+                current_tokens += word_tokens
+            else:
+                if current_chunk:
+                    chunks.append(" ".join(current_chunk))
+                current_chunk = [word]
+                current_tokens = word_tokens
+        if current_chunk:
+            chunks.append(" ".join(current_chunk))
         return chunks
 
     sep = separators[separator_idx]
-    
-    if sep == "":
-        splits = list(text)
-    else:
-        splits = text.split(sep)
+    splits = text.split(sep) if sep != "" else list(text)
     
     chunks = []
     current_chunk = []
-    current_len = 0
+    current_tokens = 0
     
     for split in splits:
-        if len(split) > max_chunk_size:
-            # Clear current chunk first
+        split_tokens = get_token_count(split)
+        
+        # If this split alone exceeds limit, recursively divide it
+        if split_tokens > max_tokens:
             if current_chunk:
-                joined = sep.join(current_chunk)
-                if joined.strip():
-                    chunks.append(joined.strip())
+                chunks.append(sep.join(current_chunk))
                 current_chunk = []
-                current_len = 0
-            # Recursively split the long block
-            sub_chunks = split_text_recursively(split, max_chunk_size, overlap, separator_idx + 1)
+                current_tokens = 0
+            sub_chunks = split_text_recursively_tokens(split, max_tokens, overlap_tokens, separator_idx + 1)
             chunks.extend(sub_chunks)
             continue
-        
-        sep_len = len(sep) if current_chunk else 0
-        if current_len + len(split) + sep_len <= max_chunk_size:
+            
+        sep_tokens = get_token_count(sep) if current_chunk else 0
+        if current_tokens + split_tokens + sep_tokens <= max_tokens:
             current_chunk.append(split)
-            current_len += len(split) + sep_len
+            current_tokens += split_tokens + sep_tokens
         else:
             if current_chunk:
-                joined = sep.join(current_chunk)
-                if joined.strip():
-                    chunks.append(joined.strip())
+                chunks.append(sep.join(current_chunk))
             
-            # Start new chunk with overlap
+            # Start next chunk with the overlap tokens
             overlap_chunk = []
-            overlap_len = 0
+            overlap_toks = 0
             for prev_split in reversed(current_chunk):
-                prev_sep_len = len(sep) if overlap_chunk else 0
-                if overlap_len + len(prev_split) + prev_sep_len <= overlap:
+                prev_sep_toks = get_token_count(sep) if overlap_chunk else 0
+                prev_toks = get_token_count(prev_split)
+                if overlap_toks + prev_toks + prev_sep_toks <= overlap_tokens:
                     overlap_chunk.insert(0, prev_split)
-                    overlap_len += len(prev_split) + prev_sep_len
+                    overlap_toks += prev_toks + prev_sep_toks
                 else:
                     break
             
             current_chunk = overlap_chunk
-            current_len = overlap_len
+            current_tokens = overlap_toks
             
-            sep_len = len(sep) if current_chunk else 0
+            sep_tokens = get_token_count(sep) if current_chunk else 0
             current_chunk.append(split)
-            current_len += len(split) + sep_len
+            current_tokens += split_tokens + sep_tokens
             
     if current_chunk:
-        joined = sep.join(current_chunk)
-        if joined.strip():
-            chunks.append(joined.strip())
-            
+        chunks.append(sep.join(current_chunk))
+        
     return chunks
 
-def extract_and_chunk_pdf(file_path, chunk_size=1500, chunk_overlap=200):
-    chunks = []
+def extract_and_chunk_pdf(file_path, chunk_size=500, chunk_overlap=50):
+    raw_chunks = []
     doc_fitz = None
     try:
         with open(file_path, 'rb') as f:
@@ -153,14 +187,28 @@ def extract_and_chunk_pdf(file_path, chunk_size=1500, chunk_overlap=200):
                 if not text:
                     continue
                 
-                # Run recursive splitting on the page text
-                page_chunks = split_text_recursively(text, chunk_size, chunk_overlap)
+                # Dynamic heading & section heuristic (first line that is short and capitalized/keyterm)
+                heading = ""
+                section = ""
+                lines = [line.strip() for line in text.split('\n') if line.strip()]
+                for line in lines[:3]:
+                    if len(line) < 100 and (line.isupper() or any(s in line.lower() for s in ['chapter', 'section', 'introduction', 'conclusion', 'summary'])):
+                        heading = line
+                        break
+                
+                # Split page text using token-aware recursive splitter
+                page_chunks = split_text_recursively_tokens(text, chunk_size, chunk_overlap)
                 
                 for idx, chunk_text in enumerate(page_chunks):
-                    chunks.append({
+                    if clean_and_check_noisy(chunk_text):
+                        continue
+                        
+                    raw_chunks.append({
                         'text': chunk_text,
                         'page': page_num,
-                        'chunk_in_page_idx': idx
+                        'heading': heading,
+                        'section': section,
+                        'token_count': get_token_count(chunk_text)
                     })
     finally:
         if doc_fitz is not None:
@@ -169,99 +217,40 @@ def extract_and_chunk_pdf(file_path, chunk_size=1500, chunk_overlap=200):
             except Exception:
                 pass
                 
-    return chunks
-
-def process_document_pipeline(document_id):
-    try:
-        document = Document.objects.get(id=document_id)
-    except Document.DoesNotExist:
-        logger.error(f"Document {document_id} does not exist in database.")
-        return
-
-    try:
-        # Extract text and chunk
-        chunks = extract_and_chunk_pdf(document.file.path)
-        
-        if not chunks:
-            raise ValueError("No extractable text found in this PDF.")
-
-        # Load model and get collection
-        model = get_embedding_model()
-        collection = get_chroma_collection()
-
-        # Prepare lists for batch Chroma insertion
-        ids = []
-        embeddings = []
-        metadatas = []
-        documents_texts = []
-
-        chunk_objs = []
-        for idx, chunk in enumerate(chunks):
-            vector_id = f"doc_{document_id}_chunk_{idx}"
-            
-            emb_res = model.encode(chunk['text'])
-            embedding = emb_res.tolist() if hasattr(emb_res, 'tolist') else list(emb_res)
-            
-            ids.append(vector_id)
-            embeddings.append(embedding)
-            metadatas.append({
-                "document_id": document_id,
-                "page_number": chunk['page'],
-                "owner_id": document.owner.id
-            })
-            documents_texts.append(chunk['text'])
-
-            # Create django database chunk instances
-            chunk_objs.append(
-                DocumentChunk(
-                    document=document,
-                    chunk_text=chunk['text'],
-                    chunk_index=idx,
-                    page_number=chunk['page'],
-                    vector_id=vector_id
-                )
-            )
-
-        # Bulk write chunks to DB
-        DocumentChunk.objects.bulk_create(chunk_objs)
-
-        # Write to ChromaDB
-        collection.add(
-            ids=ids,
-            embeddings=embeddings,
-            metadatas=metadatas,
-            documents=documents_texts
-        )
-
-        # Complete
-        document.status = 'ready'
-        document.save()
-        logger.info(f"Successfully processed Document ID {document_id}: {len(chunks)} chunks embedded.")
-
-    except Exception as e:
-        logger.exception(f"Error processing Document ID {document_id}")
-        try:
-            document.status = 'failed'
-            document.error_message = str(e)
-            document.save()
-        except Exception as inner_e:
-            logger.error(f"Failed to save document error status: {str(inner_e)}")
-    finally:
-        import gc
-        gc.collect()
-
-def run_document_processing(document_id):
-    from django.db import close_old_connections
+    # Merge extremely small chunks (< 50 tokens) with adjacent chunks on the same page
+    merged_chunks = []
+    temp_chunk = None
     
-    def thread_target():
-        try:
-            close_old_connections()
-            process_document_pipeline(document_id)
-        except Exception as thread_err:
-            logger.exception(f"Unhandled error in document processing thread: {str(thread_err)}")
-        finally:
-            close_old_connections()
+    for chunk in raw_chunks:
+        if chunk['token_count'] < 50:
+            if temp_chunk is None:
+                temp_chunk = chunk
+            else:
+                if temp_chunk['page'] == chunk['page']:
+                    temp_chunk['text'] = temp_chunk['text'] + "\n" + chunk['text']
+                    temp_chunk['token_count'] = get_token_count(temp_chunk['text'])
+                    if temp_chunk['token_count'] >= 50:
+                        merged_chunks.append(temp_chunk)
+                        temp_chunk = None
+                else:
+                    merged_chunks.append(temp_chunk)
+                    temp_chunk = chunk
+        else:
+            if temp_chunk is not None:
+                if temp_chunk['page'] == chunk['page']:
+                    chunk['text'] = temp_chunk['text'] + "\n" + chunk['text']
+                    chunk['token_count'] = get_token_count(chunk['text'])
+                else:
+                    merged_chunks.append(temp_chunk)
+                temp_chunk = None
+            merged_chunks.append(chunk)
             
-    thread = threading.Thread(target=thread_target, name=f"DocProcess-{document_id}")
-    thread.daemon = True
-    thread.start()
+    if temp_chunk is not None:
+        merged_chunks.append(temp_chunk)
+        
+    return merged_chunks
+
+def split_text_recursively(text, max_chunk_size=1500, overlap=200):
+    max_tokens = max(1, max_chunk_size // 4)
+    overlap_tokens = max(0, overlap // 4)
+    return split_text_recursively_tokens(text, max_tokens, overlap_tokens)

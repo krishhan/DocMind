@@ -6,7 +6,7 @@ import { useParams, useRouter } from "next/navigation";
 import { 
   ArrowLeft, Send, MessageSquare, Loader2, BookOpen, AlertCircle, 
   ChevronDown, ChevronUp, Bot, User, RefreshCw, FileText,
-  Pencil, Trash2, Check, X
+  Pencil, Trash2, Check, X, Copy
 } from "lucide-react";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -18,7 +18,7 @@ interface Message {
   id: number;
   role: "user" | "assistant";
   content: string;
-  source_chunks?: { page_number: number; text: string }[];
+  source_chunks?: { page_number: number; text: string; document_name?: string }[];
   created_at: string;
 }
 
@@ -37,6 +37,33 @@ interface DocumentDetail {
   error_message?: string;
 }
 
+// Custom Markdown Code Block with Copy Actions
+const CodeBlock = ({ language, value }: { language: string; value: string }) => {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = () => {
+    navigator.clipboard.writeText(value);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+  return (
+    <div className="relative border border-zinc-800 rounded-xl overflow-hidden my-4 bg-zinc-950 font-mono text-xs select-text">
+      <div className="flex items-center justify-between px-4 py-2 bg-zinc-900 border-b border-zinc-800 text-zinc-400">
+        <span className="text-[10px] uppercase font-bold tracking-wider">{language || "code"}</span>
+        <button
+          onClick={handleCopy}
+          className="flex items-center gap-1.5 hover:text-white transition-colors cursor-pointer text-[10px] font-bold"
+        >
+          {copied ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+          <span>{copied ? "Copied" : "Copy"}</span>
+        </button>
+      </div>
+      <pre className="p-4 overflow-x-auto text-zinc-100 leading-relaxed font-mono">
+        <code>{value}</code>
+      </pre>
+    </div>
+  );
+};
+
 export default function DocumentChatPage() {
   const { user, loading: authLoading, apiFetch, backendUrl } = useAuth();
   const router = useRouter();
@@ -49,6 +76,10 @@ export default function DocumentChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loadingDoc, setLoadingDoc] = useState(true);
   
+  // States for multi-document selection checklist
+  const [allDocs, setAllDocs] = useState<DocumentDetail[]>([]);
+  const [selectedDocIds, setSelectedDocIds] = useState<number[]>([parseInt(docId)]);
+
   const [inputText, setInputText] = useState("");
   const [editingConvoId, setEditingConvoId] = useState<number | null>(null);
   const [editTitle, setEditTitle] = useState("");
@@ -57,6 +88,7 @@ export default function DocumentChatPage() {
   const [asking, setAsking] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
   const [expandedSources, setExpandedSources] = useState<Record<number, boolean>>({});
+  const [copiedMsgId, setCopiedMsgId] = useState<number | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -83,6 +115,20 @@ export default function DocumentChatPage() {
       setLoadingDoc(false);
     }
   }, [docId, apiFetch, router]);
+
+  // Fetch all ready documents for multi-document select
+  const fetchAllDocuments = useCallback(async () => {
+    try {
+      const res = await apiFetch("/api/documents/");
+      if (res.ok) {
+        const data = await res.json();
+        const docList = Array.isArray(data) ? data : (data.results || []);
+        setAllDocs(docList.filter((d: any) => d.status === "ready"));
+      }
+    } catch (err) {
+      console.error("Failed to fetch library documents", err);
+    }
+  }, [apiFetch]);
 
   // Fetch conversations list
   const fetchConversations = useCallback(async () => {
@@ -115,8 +161,9 @@ export default function DocumentChatPage() {
     if (user && docId) {
       fetchDocDetails();
       fetchConversations();
+      fetchAllDocuments();
     }
-  }, [user, docId, fetchDocDetails, fetchConversations]);
+  }, [user, docId, fetchDocDetails, fetchConversations, fetchAllDocuments]);
 
   // Scroll to bottom on messages update
   useEffect(() => {
@@ -150,7 +197,6 @@ export default function DocumentChatPage() {
       }
     }
     
-    // If backendUrl is set to a specific origin (e.g. VPS or dev server), use it to load the PDF
     if (backendUrl) {
       return `${backendUrl}${relativePath}`;
     }
@@ -158,11 +204,9 @@ export default function DocumentChatPage() {
     if (typeof window !== "undefined") {
       const hostname = window.location.hostname;
       const port = window.location.port;
-      // In local dev, frontend is on 3000, backend is on 8000.
       if (port === "3000") {
         return `http://${hostname}:8000${relativePath}`;
       }
-      // In production/containers, go through Nginx port (e.g. 8080 or 80)
       const portSuffix = port ? `:${port}` : "";
       return `http://${hostname}${portSuffix}${relativePath}`;
     }
@@ -230,6 +274,12 @@ export default function DocumentChatPage() {
     }
   };
 
+  const handleCopyMessage = (text: string, msgId: number) => {
+    navigator.clipboard.writeText(text);
+    setCopiedMsgId(msgId);
+    setTimeout(() => setCopiedMsgId(null), 2000);
+  };
+
   const handleAsk = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputText.trim() || asking) return;
@@ -253,7 +303,8 @@ export default function DocumentChatPage() {
         method: "POST",
         body: JSON.stringify({
           question: userQuestion,
-          conversation_id: activeConvoId
+          conversation_id: activeConvoId,
+          document_ids: selectedDocIds
         }),
       });
 
@@ -264,7 +315,7 @@ export default function DocumentChatPage() {
         return;
       }
 
-      // Read SSE stream
+      // Read JSON-encoded SSE stream
       const reader = res.body?.getReader();
       const decoder = new TextDecoder();
       if (!reader) throw new Error("No reader available");
@@ -318,12 +369,26 @@ export default function DocumentChatPage() {
               prev.map(m => m.id === tempAssistantMsgId ? { ...m, source_chunks: retrievedSources } : m)
             );
           } else if (eventName === "message") {
-            assistantAnswer += dataText;
+            try {
+              const payload = JSON.parse(dataText);
+              assistantAnswer += payload.text;
+            } catch (e) {
+              // Backward compatibility fallback for raw text streaming
+              assistantAnswer += dataText;
+            }
             setMessages(prev => 
               prev.map(m => m.id === tempAssistantMsgId ? { ...m, content: assistantAnswer } : m)
             );
+          } else if (eventName === "done") {
+            // Streaming finalized
+            console.log("Response stream finalized.");
           } else if (eventName === "error") {
-            setErrorMsg(dataText);
+            try {
+              const payload = JSON.parse(dataText);
+              setErrorMsg(payload.error || "Failed to stream answer");
+            } catch (e) {
+              setErrorMsg(dataText);
+            }
             // Remove optimistic assistant bubble on error
             setMessages(prev => prev.filter(m => m.id !== tempAssistantMsgId));
           }
@@ -347,10 +412,60 @@ export default function DocumentChatPage() {
     }));
   };
 
-  if (authLoading || !user || loadingDoc) {
+  // Premium Page Skeleton Loader
+  if (authLoading || !user) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-zinc-950">
         <Loader2 className="h-8 w-8 animate-spin text-indigo-500" />
+      </div>
+    );
+  }
+
+  if (loadingDoc) {
+    return (
+      <div className="h-screen w-screen bg-zinc-950 text-zinc-100 flex overflow-hidden">
+        {/* Sidebar Skeleton */}
+        <aside className="w-80 shrink-0 bg-zinc-900 border-r border-zinc-800 flex flex-col justify-between hidden md:flex p-4 space-y-6">
+          <div className="space-y-4 animate-pulse">
+            <div className="h-8 bg-zinc-800 rounded-xl w-3/4" />
+            <div className="h-16 bg-zinc-800 rounded-xl w-full" />
+            <div className="h-10 bg-zinc-800 rounded-xl w-full" />
+            <div className="space-y-2 pt-4">
+              <div className="h-4 bg-zinc-800 rounded w-1/2" />
+              <div className="h-10 bg-zinc-800 rounded-xl w-full" />
+              <div className="h-10 bg-zinc-800 rounded-xl w-full" />
+              <div className="h-10 bg-zinc-800 rounded-xl w-full" />
+            </div>
+          </div>
+          <div className="h-6 bg-zinc-800 rounded w-1/3 self-center" />
+        </aside>
+
+        {/* Main Content Skeleton */}
+        <section className="flex-1 flex flex-col min-w-0 bg-zinc-950 p-6 space-y-6 animate-pulse">
+          <div className="h-14 bg-zinc-900 border border-zinc-800 rounded-2xl w-full" />
+          <div className="flex-1 flex gap-6">
+            <div className="hidden lg:block w-1/2 bg-zinc-900 border border-zinc-800 rounded-3xl" />
+            <div className="flex-1 bg-zinc-900/40 border border-zinc-800/50 rounded-3xl p-6 flex flex-col justify-between">
+              <div className="space-y-4">
+                <div className="flex gap-4">
+                  <div className="h-8 w-8 bg-zinc-800 rounded-lg shrink-0" />
+                  <div className="space-y-2 flex-1">
+                    <div className="h-4 bg-zinc-800 rounded w-1/3" />
+                    <div className="h-16 bg-zinc-800 rounded-2xl w-3/4" />
+                  </div>
+                </div>
+                <div className="flex gap-4 justify-end">
+                  <div className="space-y-2 flex-1 items-end flex flex-col">
+                    <div className="h-4 bg-zinc-800 rounded w-1/4" />
+                    <div className="h-12 bg-zinc-800 rounded-2xl w-2/3" />
+                  </div>
+                  <div className="h-8 w-8 bg-zinc-800 rounded-lg shrink-0" />
+                </div>
+              </div>
+              <div className="h-12 bg-zinc-950 border border-zinc-800 rounded-xl w-full" />
+            </div>
+          </div>
+        </section>
       </div>
     );
   }
@@ -364,7 +479,7 @@ export default function DocumentChatPage() {
           <div className="p-4 border-b border-zinc-800 flex items-center justify-between">
             <button
               onClick={() => router.push("/dashboard")}
-              className="flex items-center gap-2 text-zinc-400 hover:text-white text-sm font-semibold transition-colors duration-200"
+              className="flex items-center gap-2 text-zinc-400 hover:text-white text-sm font-semibold transition-colors duration-200 cursor-pointer"
             >
               <ArrowLeft className="h-4 w-4" />
               <span>Back to Library</span>
@@ -386,11 +501,57 @@ export default function DocumentChatPage() {
             </div>
           </div>
 
+          {/* Multi-Document Selector checklist */}
+          <div className="p-4 border-b border-zinc-800/80 max-h-60 overflow-y-auto flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider">Select Documents</h3>
+              <span className="text-[10px] bg-indigo-500/20 text-indigo-400 font-bold px-2 py-0.5 rounded-full">
+                {selectedDocIds.length} active
+              </span>
+            </div>
+            
+            <div className="space-y-1.5 mt-2 select-none">
+              {allDocs.map((docItem) => (
+                <label 
+                  key={docItem.id} 
+                  className={`flex items-start gap-2.5 p-2 rounded-lg cursor-pointer hover:bg-zinc-800/40 transition-colors text-xs border ${
+                    selectedDocIds.includes(docItem.id)
+                      ? "border-indigo-500/20 bg-indigo-500/5 text-white" 
+                      : "border-transparent text-zinc-400 hover:text-zinc-200"
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedDocIds.includes(docItem.id)}
+                    onChange={() => {
+                      setSelectedDocIds(prev => {
+                        if (docItem.id === parseInt(docId)) {
+                          if (prev.length === 1) return prev;
+                        }
+                        if (prev.includes(docItem.id)) {
+                          return prev.filter(id => id !== docItem.id);
+                        } else {
+                          return [...prev, docItem.id];
+                        }
+                      });
+                    }}
+                    className="mt-0.5 rounded border-zinc-700 bg-zinc-800 text-indigo-600 focus:ring-indigo-500 focus:ring-offset-zinc-900"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="font-semibold truncate leading-tight" title={docItem.filename}>
+                      {docItem.filename}
+                    </p>
+                  </div>
+                </label>
+              ))}
+            </div>
+          </div>
+
           {/* New Chat Button */}
           <div className="p-4">
             <button
               onClick={startNewConversation}
-              className={`w-full py-2.5 px-4 rounded-xl border font-semibold text-sm transition-all duration-200 flex items-center justify-center gap-2 ${
+              className={`w-full py-2.5 px-4 rounded-xl border font-semibold text-sm transition-all duration-200 flex items-center justify-center gap-2 cursor-pointer ${
                 activeConvoId === null
                   ? "bg-indigo-600 border-transparent text-white shadow-lg shadow-indigo-500/15 cursor-default"
                   : "bg-zinc-800/40 border-zinc-800 hover:border-zinc-700 text-zinc-300 hover:bg-zinc-800/80"
@@ -465,14 +626,14 @@ export default function DocumentChatPage() {
                       <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150 shrink-0">
                         <button
                           onClick={(e) => handleStartRename(e, convo)}
-                          className="p-1 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded transition-all"
+                          className="p-1 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded transition-all cursor-pointer"
                           title="Rename conversation"
                         >
                           <Pencil className="h-3.5 w-3.5" />
                         </button>
                         <button
                           onClick={(e) => handleDeleteConversation(e, convo.id)}
-                          className="p-1 text-zinc-400 hover:text-red-400 hover:bg-zinc-800 rounded transition-all"
+                          className="p-1 text-zinc-400 hover:text-red-400 hover:bg-zinc-800 rounded transition-all cursor-pointer"
                           title="Delete conversation"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
@@ -487,7 +648,7 @@ export default function DocumentChatPage() {
         </div>
 
         <div className="p-4 border-t border-zinc-800 text-center">
-          <span className="text-xs text-zinc-600">DocMind RAG Engine v1.0</span>
+          <span className="text-xs text-zinc-600">DocMind RAG Engine v2.0</span>
         </div>
       </aside>
 
@@ -520,7 +681,7 @@ export default function DocumentChatPage() {
             <div className="flex items-center gap-2">
               <FileText className="h-4 w-4 text-indigo-400 hidden md:block" />
               <span className="font-bold text-white text-sm line-clamp-1 max-w-[200px] sm:max-w-md">
-                {document?.filename}
+                {document?.filename} {selectedDocIds.length > 1 && `(+${selectedDocIds.length - 1} docs)`}
               </span>
             </div>
           </div>
@@ -528,7 +689,7 @@ export default function DocumentChatPage() {
           {document?.file && (
             <button
               onClick={() => setShowPDF(!showPDF)}
-              className="flex items-center gap-2 bg-zinc-850 hover:bg-zinc-800 text-zinc-300 hover:text-white text-xs font-semibold px-3 py-1.5 rounded-xl border border-zinc-700/50 transition-all duration-200"
+              className="flex items-center gap-2 bg-zinc-850 hover:bg-zinc-800 text-zinc-300 hover:text-white text-xs font-semibold px-3 py-1.5 rounded-xl border border-zinc-700/50 transition-all duration-200 cursor-pointer"
             >
               <BookOpen className="h-3.5 w-3.5 text-indigo-400" />
               <span>{showPDF ? "Hide Document" : "Show Document"}</span>
@@ -543,21 +704,21 @@ export default function DocumentChatPage() {
               <div className="h-16 w-16 items-center justify-center flex rounded-2xl bg-indigo-500/10 text-indigo-400 mb-6 border border-indigo-500/10 shadow-lg">
                 <BookOpen className="h-8 w-8" />
               </div>
-              <h2 className="text-2xl font-extrabold text-white tracking-tight">Ask your Document</h2>
-              <p className="text-zinc-400 text-sm mt-2 leading-relaxed">
-                Enter a question below. DocMind will retrieve the most relevant sections from <span className="text-indigo-400 font-semibold">{document?.filename}</span> and answer using AI, grounding its answers in facts and providing page citations.
+              <h2 className="text-2xl font-extrabold text-white tracking-tight">Ask your Library</h2>
+              <p className="text-zinc-400 text-sm mt-2 leading-relaxed font-medium">
+                Enter a question below. DocMind will retrieve context across all {selectedDocIds.length} selected documents and answer with AI.
               </p>
               
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full mt-8">
                 <button 
-                  onClick={() => setInputText("What is the main topic or summary of this document?")}
-                  className="p-3 bg-zinc-900/40 border border-zinc-800 hover:border-zinc-700 rounded-xl text-xs text-left text-zinc-300 hover:bg-zinc-800/30 transition-all font-medium"
+                  onClick={() => setInputText("What is the main topic or summary of the active documents?")}
+                  className="p-3 bg-zinc-900/40 border border-zinc-800 hover:border-zinc-700 rounded-xl text-xs text-left text-zinc-300 hover:bg-zinc-800/30 transition-all font-semibold cursor-pointer"
                 >
-                  "Summarize this document"
+                  "Summarize active documents"
                 </button>
                 <button 
-                  onClick={() => setInputText("Are there any key dates, schedules, or timelines mentioned?")}
-                  className="p-3 bg-zinc-900/40 border border-zinc-800 hover:border-zinc-700 rounded-xl text-xs text-left text-zinc-300 hover:bg-zinc-800/30 transition-all font-medium"
+                  onClick={() => setInputText("Are there any key dates or deadlines mentioned across the documents?")}
+                  className="p-3 bg-zinc-900/40 border border-zinc-800 hover:border-zinc-700 rounded-xl text-xs text-left text-zinc-300 hover:bg-zinc-800/30 transition-all font-semibold cursor-pointer"
                 >
                   "Identify key dates/deadlines"
                 </button>
@@ -587,10 +748,42 @@ export default function DocumentChatPage() {
                         {isUser ? (
                           <p className="whitespace-pre-wrap">{msg.content}</p>
                         ) : (
-                          <div className="markdown-content">
+                          <div className="markdown-content select-text">
                             <ReactMarkdown
                               remarkPlugins={[remarkGfm, remarkMath]}
                               rehypePlugins={[rehypeKatex]}
+                              components={{
+                                code({ node, inline, className, children, ...props }: any) {
+                                  const match = /language-(\w+)/.exec(className || '');
+                                  const codeString = String(children).replace(/\n$/, '');
+                                  return !inline && match ? (
+                                    <CodeBlock language={match[1]} value={codeString} />
+                                  ) : (
+                                    <code className="bg-zinc-800 text-indigo-300 px-1.5 py-0.5 rounded font-mono text-xs font-semibold" {...props}>
+                                      {children}
+                                    </code>
+                                  );
+                                },
+                                table({ children }) {
+                                  return (
+                                    <div className="overflow-x-auto my-4 rounded-xl border border-zinc-800 shadow-sm">
+                                      <table className="min-w-full divide-y divide-zinc-800 text-sm text-left">{children}</table>
+                                    </div>
+                                  );
+                                },
+                                thead({ children }) {
+                                  return <thead className="bg-zinc-900/60 font-bold text-zinc-200">{children}</thead>;
+                                },
+                                th({ children }) {
+                                  return <th className="px-4 py-2.5 text-left font-extrabold text-zinc-300 border-b border-zinc-800 uppercase text-[10px] tracking-wider">{children}</th>;
+                                },
+                                tr({ children }) {
+                                  return <tr className="hover:bg-zinc-900/20 transition-colors odd:bg-zinc-900/5 even:bg-transparent">{children}</tr>;
+                                },
+                                td({ children }) {
+                                  return <td className="px-4 py-2.5 text-zinc-400 border-b border-zinc-800/40 text-xs leading-normal">{children}</td>;
+                                }
+                              }}
                             >
                               {msg.content}
                             </ReactMarkdown>
@@ -598,20 +791,42 @@ export default function DocumentChatPage() {
                         )}
                       </div>
 
-                      {/* Source Chunks Collapsible Section */}
-                      {!isUser && msg.source_chunks && msg.source_chunks.length > 0 && (
-                        <div className="pl-2">
-                          <button
-                            onClick={() => toggleSource(msg.id)}
-                            className="flex items-center gap-1 text-[11px] font-semibold text-indigo-400 hover:text-indigo-300 transition-colors"
-                          >
-                            <BookOpen className="h-3 w-3" />
-                            <span>Sources Referenced ({msg.source_chunks.length})</span>
-                            {expandedSources[msg.id] ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-                          </button>
+                      {/* Source Chunks Collapsible Section & Message Actions */}
+                      {!isUser && (
+                        <div className="pl-2 flex flex-col gap-2 items-start">
+                          {/* Message Copy and Source Actions */}
+                          <div className="flex items-center gap-3 text-[10px] font-bold text-zinc-500 select-none">
+                            {msg.source_chunks && msg.source_chunks.length > 0 && (
+                              <button
+                                onClick={() => toggleSource(msg.id)}
+                                className="flex items-center gap-1 text-indigo-400 hover:text-indigo-300 transition-colors cursor-pointer"
+                              >
+                                <BookOpen className="h-3 w-3" />
+                                <span>Sources ({msg.source_chunks.length})</span>
+                                {expandedSources[msg.id] ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+                              </button>
+                            )}
+                            <button
+                              onClick={() => handleCopyMessage(msg.content, msg.id)}
+                              className="flex items-center gap-1 hover:text-zinc-300 transition-colors cursor-pointer"
+                            >
+                              {copiedMsgId === msg.id ? (
+                                <>
+                                  <Check className="h-3 w-3 text-emerald-400" />
+                                  <span className="text-emerald-400">Copied!</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="h-3 w-3" />
+                                  <span>Copy Response</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
 
-                          {expandedSources[msg.id] && (
-                            <div className="mt-2 space-y-2 border-l border-zinc-800 pl-3">
+                          {/* Expanded Sources Section (Grouped by Document) */}
+                          {expandedSources[msg.id] && msg.source_chunks && (
+                            <div className="mt-1 space-y-2 border-l border-zinc-800 pl-3 w-full">
                               {msg.source_chunks.map((source, sIdx) => (
                                 <div 
                                   key={sIdx} 
@@ -619,14 +834,19 @@ export default function DocumentChatPage() {
                                     setShowPDF(true);
                                     setPdfPage(source.page_number);
                                   }}
-                                  className="bg-zinc-950/40 border border-zinc-800/60 p-2.5 rounded-xl text-xs space-y-1 cursor-pointer hover:border-indigo-500/40 transition-colors group/source text-left"
+                                  className="bg-zinc-950/40 border border-zinc-800/60 p-2.5 rounded-xl text-xs space-y-1 cursor-pointer hover:border-indigo-500/40 transition-colors group/source text-left w-full"
                                 >
                                   <div className="font-bold text-zinc-500 flex items-center gap-1.5 justify-between">
-                                    <div className="flex items-center gap-1.5">
-                                      <span className="h-1.5 w-1.5 bg-indigo-500 rounded-full" />
-                                      <span>Page {source.page_number}</span>
+                                    <div className="flex items-center gap-1.5 min-w-0">
+                                      <span className="h-1.5 w-1.5 bg-indigo-500 rounded-full shrink-0" />
+                                      <span className="truncate text-zinc-400" title={source.document_name}>
+                                        {source.document_name || "Document"}
+                                      </span>
+                                      <span className="text-[10px] bg-zinc-800 px-1.5 py-0.5 rounded text-zinc-500 shrink-0">
+                                        Page {source.page_number}
+                                      </span>
                                     </div>
-                                    <span className="text-[10px] text-indigo-400 font-semibold group-hover/source:underline">Click to view</span>
+                                    <span className="text-[10px] text-indigo-400 font-semibold group-hover/source:underline shrink-0">View PDF</span>
                                   </div>
                                   <p className="text-zinc-400 leading-relaxed italic">"...{source.text.trim()}..."</p>
                                 </div>
@@ -647,15 +867,16 @@ export default function DocumentChatPage() {
                 );
               })}
 
-              {/* Bot thinking indicator */}
+              {/* Bot thinking indicator (Skeleton) */}
               {asking && (
-                <div className="flex gap-4 justify-start">
+                <div className="flex gap-4 justify-start animate-pulse">
                   <div className="h-8 w-8 shrink-0 rounded-lg bg-indigo-600/10 text-indigo-400 flex items-center justify-center border border-indigo-500/15">
                     <Bot className="h-4 w-4" />
                   </div>
-                  <div className="bg-zinc-900/50 border border-zinc-800/60 rounded-2xl rounded-tl-none px-5 py-4 text-sm text-zinc-400 flex items-center gap-3">
-                    <Loader2 className="h-4 w-4 animate-spin text-indigo-500" />
-                    <span>Searching vector index & synthesizing response...</span>
+                  <div className="bg-zinc-900/50 border border-zinc-800/60 rounded-2xl rounded-tl-none px-5 py-4 text-sm text-zinc-400 flex-1 max-w-md space-y-2">
+                    <div className="h-3.5 bg-zinc-800 rounded w-1/4" />
+                    <div className="h-3.5 bg-zinc-800 rounded w-3/4 animate-pulse" />
+                    <div className="h-3.5 bg-zinc-800 rounded w-1/2" />
                   </div>
                 </div>
               )}
@@ -681,20 +902,20 @@ export default function DocumentChatPage() {
                 disabled={asking}
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
-                className="flex-1 bg-zinc-950 border border-zinc-800/80 hover:border-zinc-700 focus:border-indigo-500 rounded-xl px-4 py-3.5 pr-14 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all disabled:opacity-50"
-                placeholder={`Ask DocMind about ${document?.filename}...`}
+                className="flex-1 bg-zinc-950 border border-zinc-800/80 hover:border-zinc-700 focus:border-indigo-500 rounded-xl px-4 py-3.5 pr-14 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all disabled:opacity-50 font-medium"
+                placeholder="Ask DocMind a question about the active documents..."
               />
               <button
                 type="submit"
                 disabled={asking || !inputText.trim()}
-                className="absolute right-2 top-2 h-10 w-10 shrink-0 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg flex items-center justify-center shadow-lg transition-colors disabled:opacity-40 disabled:hover:bg-indigo-600"
+                className="absolute right-2 top-2 h-10 w-10 shrink-0 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg flex items-center justify-center shadow-lg transition-colors disabled:opacity-40 disabled:hover:bg-indigo-600 cursor-pointer"
               >
                 <Send className="h-4 w-4" />
               </button>
             </form>
             
-            <p className="text-[10px] text-zinc-600 mt-2.5 text-center">
-              DocMind daily rate limit: 20 queries max per user. Grounded on retrieved context.
+            <p className="text-[10px] text-zinc-600 mt-2.5 text-center font-semibold">
+              Grounded on selected document context. Daily user rate limit: 20 queries.
             </p>
           </div>
         </div>

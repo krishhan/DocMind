@@ -48,7 +48,11 @@ class Command(BaseCommand):
             metadatas.append({
                 "document_id": chunk.document.id,
                 "page_number": chunk.page_number,
-                "owner_id": chunk.document.owner.id
+                "owner_id": chunk.document.owner.id,
+                "heading": chunk.heading or "",
+                "section": chunk.section or "",
+                "token_count": chunk.token_count or 0,
+                "chunk_index": chunk.chunk_index
             })
             documents_texts.append(chunk.chunk_text)
             

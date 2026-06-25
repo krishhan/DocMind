@@ -4,9 +4,33 @@ from rest_framework import status, permissions, generics
 from rest_framework.response import Response
 from .models import Document
 from .serializers import DocumentSerializer
-from .utils import run_document_processing, get_chroma_collection
+from .utils import get_chroma_collection
+from .tasks import process_document_task
 
 logger = logging.getLogger(__name__)
+
+def is_valid_pdf(file_obj):
+    # PDF Signature Check
+    header = file_obj.read(5)
+    file_obj.seek(0)
+    if header != b'%PDF-':
+        return False, "Invalid file format. The file is not a valid PDF document (missing %PDF- header)."
+        
+    # MIME Type Check via python-magic
+    try:
+        import magic
+        # Read the first 2048 bytes for magic analysis
+        buffer = file_obj.read(2048)
+        file_obj.seek(0)
+        mime = magic.from_buffer(buffer, mime=True)
+        if mime != 'application/pdf':
+            return False, f"Invalid content type: {mime}. Only PDF files are supported."
+    except Exception as e:
+        logger.warning(f"python-magic validation bypassed: {str(e)}. Falling back to client-provided MIME.")
+        if getattr(file_obj, 'content_type', '') != 'application/pdf':
+            return False, "Invalid content type. Only PDF files are supported."
+            
+    return True, None
 
 class DocumentListUploadView(generics.ListCreateAPIView):
     serializer_class = DocumentSerializer
@@ -27,9 +51,9 @@ class DocumentListUploadView(generics.ListCreateAPIView):
             doc.status = 'failed'
             doc.error_message = "Processing timed out. The server might have restarted or run out of memory. Please try again."
             doc.save()
-            logger.warning(f"Marked stuck Document ID {doc.id} as failed.")
+            logger.warning(f"Marked stuck Document ID {doc.id} as failed.", extra={"document_id": doc.id})
 
-        return Document.objects.filter(owner=self.request.user).order_by('-upload_date')
+        return Document.objects.filter(owner=self.request.user).select_related('owner').order_by('-upload_date')
 
     def create(self, request, *args, **kwargs):
         file_obj = request.FILES.get('file')
@@ -42,12 +66,17 @@ class DocumentListUploadView(generics.ListCreateAPIView):
         if file_obj.size > 10 * 1024 * 1024:
             return Response({"error": "File size exceeds the 10MB limit."}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Content/signature validation
+        is_valid, err_msg = is_valid_pdf(file_obj)
+        if not is_valid:
+            return Response({"error": err_msg}, status=status.HTTP_400_BAD_REQUEST)
+
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         document = serializer.save()
         
-        # Trigger local sentence embedding thread
-        run_document_processing(document.id)
+        # Trigger Celery background task
+        process_document_task.delay(document.id)
         
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
