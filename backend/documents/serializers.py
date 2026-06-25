@@ -4,8 +4,8 @@ from .models import Document, DocumentChunk
 class DocumentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Document
-        fields = ('id', 'filename', 'upload_date', 'status', 'file', 'error_message')
-        read_only_fields = ('id', 'filename', 'upload_date', 'status', 'error_message')
+        fields = ('id', 'filename', 'upload_date', 'status', 'file', 'error_message', 'processing_progress')
+        read_only_fields = ('id', 'filename', 'upload_date', 'status', 'error_message', 'processing_progress')
 
     def create(self, validated_data):
         file = validated_data['file']
