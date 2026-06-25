@@ -81,7 +81,7 @@ class DocumentListUploadView(generics.ListCreateAPIView):
         if settings.CELERY_TASK_ALWAYS_EAGER:
             threading.Thread(
                 target=process_document_task,
-                args=(None, document.id),
+                args=(document.id,),
                 daemon=True
             ).start()
         else:
