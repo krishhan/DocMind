@@ -115,7 +115,7 @@ services:
       context: ./frontend
       args:
         # Change this to your production domain name if deploying to a custom domain (e.g. http://yourdomain.com)
-        - NEXT_PUBLIC_BACKEND_URL=${NEXT_PUBLIC_BACKEND_URL:-http://localhost:8080}
+        - NEXT_PUBLIC_BACKEND_URL=${NEXT_PUBLIC_BACKEND_URL:-}
     container_name: docmind_frontend
     restart: unless-stopped
     depends_on:

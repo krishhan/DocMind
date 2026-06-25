@@ -95,7 +95,7 @@ export default function DashboardPage() {
     const access = localStorage.getItem("access_token");
     
     // Resolve upload URL
-    const targetUrl = `${backendUrl || "http://localhost:8000"}/api/documents/`;
+    const targetUrl = `${backendUrl}/api/documents/`;
 
     xhr.open("POST", targetUrl, true);
     if (access) {
