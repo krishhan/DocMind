@@ -75,8 +75,17 @@ class DocumentListUploadView(generics.ListCreateAPIView):
         serializer.is_valid(raise_exception=True)
         document = serializer.save()
         
-        # Trigger Celery background task
-        process_document_task.delay(document.id)
+        # Trigger background task asynchronously
+        from django.conf import settings
+        import threading
+        if settings.CELERY_TASK_ALWAYS_EAGER:
+            threading.Thread(
+                target=process_document_task,
+                args=(None, document.id),
+                daemon=True
+            ).start()
+        else:
+            process_document_task.delay(document.id)
         
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 

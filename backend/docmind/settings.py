@@ -227,6 +227,9 @@ SIMPLE_JWT = {
 # ChromaDB Settings
 CHROMA_DB_DIR = os.path.join(BASE_DIR, 'chroma_db')
 
+# OCR Settings
+DISABLE_OCR = os.environ.get('DISABLE_OCR', 'True').lower() in ('true', '1', 'yes')
+
 # Celery settings
 REDIS_URL_ENV = os.environ.get('REDIS_URL')
 if REDIS_URL_ENV:

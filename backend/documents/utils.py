@@ -168,21 +168,25 @@ def extract_and_chunk_pdf(file_path, chunk_size=500, chunk_overlap=50):
                 
                 # If digital text extraction is empty, try OCR fallback
                 if not text:
-                    logger.info(f"Page {page_num} has no digital text. Falling back to OCR...")
-                    try:
-                        if doc_fitz is None:
-                            doc_fitz = fitz.open(file_path)
-                        page_fitz = doc_fitz[page_idx]
-                        pix = page_fitz.get_pixmap()
-                        png_bytes = pix.tobytes("png")
-                        
-                        engine = get_ocr_engine()
-                        result, _ = engine(png_bytes)
-                        if result:
-                            text = "\n".join([block[1] for block in result])
-                            text = text.strip()
-                    except Exception as ocr_err:
-                        logger.error(f"OCR fallback failed for page {page_num}: {str(ocr_err)}")
+                    from django.conf import settings
+                    if getattr(settings, 'DISABLE_OCR', False):
+                        logger.warning(f"Page {page_num} has no digital text. OCR fallback is disabled to prevent OOM crash. Skipping page.")
+                    else:
+                        logger.info(f"Page {page_num} has no digital text. Falling back to OCR...")
+                        try:
+                            if doc_fitz is None:
+                                doc_fitz = fitz.open(file_path)
+                            page_fitz = doc_fitz[page_idx]
+                            pix = page_fitz.get_pixmap()
+                            png_bytes = pix.tobytes("png")
+                            
+                            engine = get_ocr_engine()
+                            result, _ = engine(png_bytes)
+                            if result:
+                                text = "\n".join([block[1] for block in result])
+                                text = text.strip()
+                        except Exception as ocr_err:
+                            logger.error(f"OCR fallback failed for page {page_num}: {str(ocr_err)}")
 
                 if not text:
                     continue
