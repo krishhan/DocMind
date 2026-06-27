@@ -1,5 +1,6 @@
 from unittest.mock import patch, MagicMock, mock_open
 from django.contrib.auth.models import User
+from django.test import override_settings
 from django.urls import reverse
 from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework import status
@@ -23,6 +24,7 @@ class DocumentTests(APITestCase):
         self.assertIn('error', response.data)
 
     @patch('documents.views.process_document_task')
+    @override_settings(CELERY_TASK_ALWAYS_EAGER=False)
     def test_upload_success(self, mock_process):
         self.client.force_authenticate(user=self.user)
         pdf_file = SimpleUploadedFile("test.pdf", b"%PDF-1.4 dummy content", content_type="application/pdf")
@@ -55,6 +57,7 @@ class DocumentTests(APITestCase):
     @patch('documents.utils.fitz.open')
     @patch('documents.utils.pypdf.PdfReader')
     @patch('builtins.open', new_callable=mock_open)
+    @override_settings(DISABLE_OCR=False)
     def test_ocr_fallback_triggered(self, mock_file_open, mock_pypdf_reader, mock_fitz_open, mock_get_ocr_engine):
         # Setup mocks
         mock_page = MagicMock()
