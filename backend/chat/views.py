@@ -77,6 +77,18 @@ def rewrite_query_with_history(question, past_messages, api_key, model_name):
             f"If the query is already self-contained or cannot be rewritten, return it exactly as-is. "
             f"Return ONLY the rewritten query text and absolutely nothing else."
         )
+        fallback_models = [
+            "meta-llama/llama-3.3-70b-instruct:free",
+            "google/gemma-4-31b-it:free",
+            "qwen/qwen3-next-80b-a3b-instruct:free",
+            "google/gemma-4-26b-a4b-it:free",
+            "openai/gpt-oss-120b:free"
+        ]
+        models_list = [model_name]
+        for m in fallback_models:
+            if m not in models_list:
+                models_list.append(m)
+
         response = client.chat.completions.create(
             model=model_name,
             messages=[
@@ -85,6 +97,9 @@ def rewrite_query_with_history(question, past_messages, api_key, model_name):
             ],
             max_tokens=100,
             temperature=0.0,
+            extra_body={
+                "models": models_list
+            }
         )
         rewritten = response.choices[0].message.content.strip()
         if rewritten:
@@ -432,6 +447,18 @@ class DocumentAskView(APIView):
                     base_url="https://openrouter.ai/api/v1",
                     api_key=api_key,
                 )
+                fallback_models = [
+                    "meta-llama/llama-3.3-70b-instruct:free",
+                    "google/gemma-4-31b-it:free",
+                    "qwen/qwen3-next-80b-a3b-instruct:free",
+                    "google/gemma-4-26b-a4b-it:free",
+                    "openai/gpt-oss-120b:free"
+                ]
+                models_list = [model_name]
+                for m in fallback_models:
+                    if m not in models_list:
+                        models_list.append(m)
+
                 response = client.chat.completions.create(
                     model=model_name,
                     messages=messages,
@@ -440,6 +467,9 @@ class DocumentAskView(APIView):
                     extra_headers={
                         "HTTP-Referer": "http://localhost:3000",
                         "X-Title": "DocMind",
+                    },
+                    extra_body={
+                        "models": models_list
                     }
                 )
                 
