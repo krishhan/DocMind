@@ -78,16 +78,15 @@ def rewrite_query_with_history(question, past_messages, api_key, model_name):
             f"Return ONLY the rewritten query text and absolutely nothing else."
         )
         fallback_models = [
-            "meta-llama/llama-3.3-70b-instruct:free",
             "google/gemma-4-31b-it:free",
-            "qwen/qwen3-next-80b-a3b-instruct:free",
-            "google/gemma-4-26b-a4b-it:free",
-            "openai/gpt-oss-120b:free"
+            "meta-llama/llama-3.3-70b-instruct:free",
+            "qwen/qwen3-next-80b-a3b-instruct:free"
         ]
         models_list = [model_name]
         for m in fallback_models:
             if m not in models_list:
                 models_list.append(m)
+        models_list = models_list[:3]
 
         response = client.chat.completions.create(
             model=model_name,
@@ -448,16 +447,15 @@ class DocumentAskView(APIView):
                     api_key=api_key,
                 )
                 fallback_models = [
-                    "meta-llama/llama-3.3-70b-instruct:free",
                     "google/gemma-4-31b-it:free",
-                    "qwen/qwen3-next-80b-a3b-instruct:free",
-                    "google/gemma-4-26b-a4b-it:free",
-                    "openai/gpt-oss-120b:free"
+                    "meta-llama/llama-3.3-70b-instruct:free",
+                    "qwen/qwen3-next-80b-a3b-instruct:free"
                 ]
                 models_list = [model_name]
                 for m in fallback_models:
                     if m not in models_list:
                         models_list.append(m)
+                models_list = models_list[:3]
 
                 response = client.chat.completions.create(
                     model=model_name,
