@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: docmind-backend
+    env: docker
+    dockerfilePath: backend/Dockerfile
+    dockerContext: backend
+    plan: free
+    envVars:
+      - key: DEBUG
+        value: "False"
+      - key: CORS_ALLOW_ALL_ORIGINS
+        value: "True"
+      - key: ALLOWED_HOSTS
+        value: "*"
+      - key: OPENROUTER_MODEL
+        value: "meta-llama/llama-3.1-8b-instruct:free"
+      - key: OPENROUTER_API_KEY
+        sync: false
